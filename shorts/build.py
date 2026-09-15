@@ -151,7 +151,10 @@ def caption_filters(captions, tmpdir, font, idx):
         tf = Path(tmpdir) / f"cap_{idx}_{j}.txt"
         tf.write_text(str(opt["text"]), encoding="utf-8")
         out.append(
-            f"drawtext=fontfile='{ff_path(font)}':textfile='{ff_path(tf)}'"
+            # expansion=none 이 없으면 '10% 할인' 같은 자막에서 ffmpeg 가
+            # % 를 서식 문자로 보고 그 자막을 통째로 그리지 않는다.
+            # 오류로 끝나지 않고 조용히 사라지므로 반드시 필요하다.
+            f"drawtext=fontfile='{ff_path(font)}':textfile='{ff_path(tf)}':expansion=none"
             f":fontcolor=white:fontsize={opt['size']}:borderw=5:bordercolor=black@0.6"
             f":x=(w-text_w)/2:y=h*{opt['y']}"
             f":alpha='{alpha_expr(start, end, opt['fade'])}'")
