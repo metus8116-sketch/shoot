@@ -55,8 +55,22 @@ def safe_clip(name):
 
 
 # ── 프리뷰 프록시 ────────────────────────────────────────────────
-def proxy_path(src):
-    return cache_dir() / f"{src.stem}_{int(src.stat().st_mtime)}_proxy.mp4"
+# 브라우저별로 재생 가능한 형식이 다르다.
+# H.264 는 Chrome·Edge·Safari·Firefox 에서 되지만, 독점 코덱이 빠진
+# 일부 Chromium 빌드에서는 재생되지 않아 WebM(VP8) 경로를 함께 둔다.
+PROXY_FORMATS = {
+    "mp4": dict(ext=".mp4", mime="video/mp4",
+                args=["-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                      "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]),
+    "webm": dict(ext=".webm", mime="video/webm",
+                 args=["-c:v", "libvpx", "-b:v", "1200k", "-deadline", "realtime",
+                       "-cpu-used", "8", "-c:a", "libvorbis", "-b:a", "96k"]),
+}
+
+
+def proxy_path(src, fmt="mp4"):
+    ext = PROXY_FORMATS[fmt]["ext"]
+    return cache_dir() / f"{src.stem}_{int(src.stat().st_mtime)}_proxy{ext}"
 
 
 def thumb_path(src):
@@ -84,16 +98,16 @@ def _cached(dst, args):
     return dst
 
 
-def make_proxy(src):
-    """브라우저가 확실히 재생할 수 있는 저용량 H.264 사본을 만든다.
+def make_proxy(src, fmt="mp4"):
+    """브라우저가 재생할 수 있는 저용량 사본을 만든다.
 
-    아이폰 원본은 HEVC라 크롬에서 재생이 안 되는 경우가 있다.
+    아이폰 원본은 HEVC라 브라우저가 직접 재생하지 못한다.
     """
-    return _cached(proxy_path(src), [
+    if fmt not in PROXY_FORMATS:
+        fmt = "mp4"
+    return _cached(proxy_path(src, fmt), [
         "-i", str(src), "-vf", "scale=-2:720",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
-        "-map_metadata", "-1"])
+        *PROXY_FORMATS[fmt]["args"], "-map_metadata", "-1"])
 
 
 def make_thumb(src):
@@ -115,7 +129,7 @@ def api_clips():
             continue
         items.append({"name": p.name, "duration": round(dur, 2),
                       "size_mb": round(p.stat().st_size / 1_048_576, 1),
-                      "ready": proxy_path(p).exists()})
+                      "ready": proxy_path(p, "mp4").exists()})
     return jsonify(items)
 
 
@@ -150,8 +164,12 @@ def api_video(name):
     p = safe_clip(name)
     if not p:
         return "", 404
+    fmt = request.args.get("fmt", "mp4")
+    if fmt not in PROXY_FORMATS:
+        fmt = "mp4"
     try:
-        return send_file(make_proxy(p), mimetype="video/mp4", conditional=True)
+        return send_file(make_proxy(p, fmt),
+                         mimetype=PROXY_FORMATS[fmt]["mime"], conditional=True)
     except subprocess.CalledProcessError:
         return "", 500
 
@@ -159,13 +177,14 @@ def api_video(name):
 @app.post("/api/prepare")
 def api_prepare():
     """선택한 클립들의 프리뷰 사본을 미리 만들어 둔다."""
-    names = request.json.get("names", [])
+    body = request.json or {}
+    fmt = body.get("fmt", "mp4")
     done = []
-    for n in names:
+    for n in body.get("names", []):
         p = safe_clip(n)
         if p:
             try:
-                make_proxy(p); make_thumb(p); done.append(n)
+                make_proxy(p, fmt); make_thumb(p); done.append(n)
             except subprocess.CalledProcessError:
                 pass
     return jsonify({"prepared": done})

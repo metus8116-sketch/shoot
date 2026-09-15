@@ -90,10 +90,7 @@ function openClip(name) {
   // 첫 재생 때는 변환 시간이 걸리니 진행 중임을 알린다.
   showLoading(true);
   v.poster = `/api/thumb/${encodeURIComponent(name)}`;   // 변환 끝나기 전에도 첫 장면을 보여준다
-  v.src = `/api/video/${encodeURIComponent(name)}`;
-  v.load();
-  v.onloadeddata = () => showLoading(false);
-  v.onerror = () => showLoading(false, "이 브라우저에서 프리뷰를 재생할 수 없습니다.\n자막 위치와 시간은 그대로 설정할 수 있고, 렌더링 결과에는 영향이 없습니다.");
+  loadWithFallback(v, name, VIDEO_FMT);
   const s = sel.get(name);
   $("trimA").value = s.trim ? s.trim[0] : "";
   $("trimB").value = s.trim ? s.trim[1] : "";
@@ -103,7 +100,30 @@ function openClip(name) {
   renderClips();
 }
 
+function loadWithFallback(v, name, fmt, tried) {
+  tried = tried || [];
+  tried.push(fmt);
+  v.src = `/api/video/${encodeURIComponent(name)}?fmt=${fmt}`;
+  v.load();
+  v.onloadeddata = () => showLoading(false);
+  v.onerror = () => {
+    // 고른 형식이 실패하면 다른 형식으로 한 번 더 시도한다
+    const next = ["mp4", "webm"].find((f) => !tried.includes(f));
+    if (next) { showLoading(true, "다른 형식으로 변환 중..."); loadWithFallback(v, name, next, tried); }
+    else showLoading(false, "프리뷰를 재생할 수 없습니다.\n자막 위치와 시간은 그대로 설정할 수 있고, 렌더링 결과에는 영향이 없습니다.");
+  };
+}
+
 const vid = () => $("vid");
+
+/* 이 브라우저가 재생할 수 있는 형식을 고른다.
+   H.264 는 대부분 되지만, 독점 코덱이 빠진 Chromium 빌드에서는 WebM 을 쓴다. */
+const VIDEO_FMT = (() => {
+  const v = document.createElement("video");
+  if (v.canPlayType('video/mp4; codecs="avc1.42E01E"')) return "mp4";
+  if (v.canPlayType('video/webm; codecs="vp8,vorbis"')) return "webm";
+  return "mp4";
+})();
 
 function showLoading(on, text) {
   let el = document.querySelector("#stage .loading");
