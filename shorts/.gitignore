@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+out/
+clips/
+.cache/
+config.yaml
+
+# 폰트 파일은 각자 받아서 넣는다 (라이선스·용량)
+fonts/*.otf
+fonts/*.ttf
+fonts/*.ttc

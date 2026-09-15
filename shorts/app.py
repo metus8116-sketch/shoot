@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""숏폼 렌더러 대시보드.
+
+브라우저에서 클립을 고르고 자막·음악을 맞춘 뒤 바로 렌더링한다.
+
+    python app.py            # http://127.0.0.1:8765 자동 실행
+    python app.py --port 9000 --no-browser
+"""
+import argparse
+import json
+import platform
+import secrets
+import socket
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import webbrowser
+from pathlib import Path
+
+import yaml
+from flask import Flask, jsonify, request, send_file, send_from_directory
+
+import bgm as bgm_mod
+import build as build_mod
+
+HERE = Path(__file__).resolve().parent
+app = Flask(__name__, static_folder=str(HERE / "static"), static_url_path="")
+
+PROJECT = HERE            # --project 로 변경 가능
+VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm"}
+
+_render = {"running": False, "log": [], "done": False, "ok": False, "outputs": []}
+_lock = threading.Lock()
+
+# 같은 와이파이의 다른 기기(폰)에서 접속할 때만 쓰는 열쇠.
+# 집에 방문한 사람 등 같은 망의 누구나 아이 영상을 보게 되는 일을 막는다.
+ACCESS_KEY = None
+
+
+def lan_ip():
+    """이 컴퓨터가 공유기에서 쓰는 주소를 찾는다."""
+    s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s_.connect(("8.8.8.8", 80))       # 실제로 보내지는 않고 경로만 확인
+        return s_.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s_.close()
+
+
+@app.before_request
+def guard():
+    if ACCESS_KEY is None:
+        return None                       # 내 컴퓨터에서만 쓰는 모드
+    if request.cookies.get("k") == ACCESS_KEY:
+        return None
+    if request.args.get("k") == ACCESS_KEY:
+        return None
+    return ("이 주소로 접속하려면 PC 화면에 표시된 링크를 그대로 열어야 합니다.", 403)
+
+
+@app.after_request
+def set_key_cookie(resp):
+    if ACCESS_KEY and request.args.get("k") == ACCESS_KEY:
+        resp.set_cookie("k", ACCESS_KEY, samesite="Lax", max_age=60 * 60 * 12)
+    return resp
+
+
+# ── 경로 유틸 ────────────────────────────────────────────────────
+def clips_dir():
+    d = PROJECT / "clips"; d.mkdir(parents=True, exist_ok=True); return d
+
+
+def cache_dir():
+    d = PROJECT / ".cache"; d.mkdir(parents=True, exist_ok=True); return d
+
+
+def out_dir():
+    d = PROJECT / "out"; d.mkdir(parents=True, exist_ok=True); return d
+
+
+def safe_clip(name):
+    """clips/ 바깥을 가리키는 경로를 차단한다."""
+    p = (clips_dir() / name).resolve()
+    if not str(p).startswith(str(clips_dir().resolve())) or not p.is_file():
+        return None
+    return p
+
+
+# ── 프리뷰 프록시 ────────────────────────────────────────────────
+# 브라우저별로 재생 가능한 형식이 다르다.
+# H.264 는 Chrome·Edge·Safari·Firefox 에서 되지만, 독점 코덱이 빠진
+# 일부 Chromium 빌드에서는 재생되지 않아 WebM(VP8) 경로를 함께 둔다.
+PROXY_FORMATS = {
+    "mp4": dict(ext=".mp4", mime="video/mp4",
+                args=["-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                      "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]),
+    "webm": dict(ext=".webm", mime="video/webm",
+                 args=["-c:v", "libvpx", "-b:v", "1200k", "-deadline", "realtime",
+                       "-cpu-used", "8", "-c:a", "libvorbis", "-b:a", "96k"]),
+}
+
+
+def proxy_path(src, fmt="mp4"):
+    ext = PROXY_FORMATS[fmt]["ext"]
+    return cache_dir() / f"{src.stem}_{int(src.stat().st_mtime)}_proxy{ext}"
+
+
+def thumb_path(src):
+    return cache_dir() / f"{src.stem}_{int(src.stat().st_mtime)}_thumb.jpg"
+
+
+def _cached(dst, args):
+    """ffmpeg 결과를 캐시한다.
+
+    임시 파일에 쓴 뒤 옮긴다 — 중간에 실패하거나 강제 종료되어도
+    0바이트 파일이 캐시에 남아 계속 재사용되는 일이 없게 한다.
+    """
+    if dst.exists() and dst.stat().st_size > 0:
+        return dst
+    # 확장자를 유지해야 ffmpeg 가 컨테이너 형식을 알아낸다
+    tmp = dst.with_name(f".{dst.stem}.part{dst.suffix}")
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *args, str(tmp)],
+                       capture_output=True, check=True)
+        if tmp.stat().st_size == 0:
+            raise subprocess.CalledProcessError(1, "ffmpeg", stderr=b"empty output")
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dst
+
+
+def make_proxy(src, fmt="mp4"):
+    """브라우저가 재생할 수 있는 저용량 사본을 만든다.
+
+    아이폰 원본은 HEVC라 브라우저가 직접 재생하지 못한다.
+    """
+    if fmt not in PROXY_FORMATS:
+        fmt = "mp4"
+    return _cached(proxy_path(src, fmt), [
+        "-i", str(src), "-vf", "scale=-2:720",
+        *PROXY_FORMATS[fmt]["args"], "-map_metadata", "-1"])
+
+
+def make_thumb(src):
+    return _cached(thumb_path(src), [
+        "-ss", "0.5", "-i", str(src), "-frames:v", "1",
+        "-vf", "scale=-2:320", "-q:v", "4", "-map_metadata", "-1"])
+
+
+# ── API: 클립 ────────────────────────────────────────────────────
+@app.get("/api/clips")
+def api_clips():
+    items = []
+    for p in sorted(clips_dir().iterdir()):
+        if p.suffix.lower() not in VIDEO_EXT:
+            continue
+        try:
+            dur = build_mod.duration_of(p)
+        except Exception:
+            continue
+        items.append({"name": p.name, "duration": round(dur, 2),
+                      "size_mb": round(p.stat().st_size / 1_048_576, 1),
+                      "ready": proxy_path(p, "mp4").exists()})
+    return jsonify(items)
+
+
+@app.post("/api/upload")
+def api_upload():
+    saved = []
+    for f in request.files.getlist("files"):
+        name = Path(f.filename).name
+        if not name or Path(name).suffix.lower() not in VIDEO_EXT:
+            continue
+        dst = clips_dir() / name
+        stem, suf, i = dst.stem, dst.suffix, 1
+        while dst.exists():
+            dst = clips_dir() / f"{stem}_{i}{suf}"; i += 1
+        f.save(dst); saved.append(dst.name)
+    return jsonify({"saved": saved})
+
+
+@app.get("/api/thumb/<path:name>")
+def api_thumb(name):
+    p = safe_clip(name)
+    if not p:
+        return "", 404
+    try:
+        return send_file(make_thumb(p), mimetype="image/jpeg")
+    except subprocess.CalledProcessError:
+        return "", 500
+
+
+@app.get("/api/video/<path:name>")
+def api_video(name):
+    p = safe_clip(name)
+    if not p:
+        return "", 404
+    fmt = request.args.get("fmt", "mp4")
+    if fmt not in PROXY_FORMATS:
+        fmt = "mp4"
+    try:
+        return send_file(make_proxy(p, fmt),
+                         mimetype=PROXY_FORMATS[fmt]["mime"], conditional=True)
+    except subprocess.CalledProcessError:
+        return "", 500
+
+
+@app.post("/api/prepare")
+def api_prepare():
+    """선택한 클립들의 프리뷰 사본을 미리 만들어 둔다."""
+    body = request.json or {}
+    fmt = body.get("fmt", "mp4")
+    done = []
+    for n in body.get("names", []):
+        p = safe_clip(n)
+        if p:
+            try:
+                make_proxy(p, fmt); make_thumb(p); done.append(n)
+            except subprocess.CalledProcessError:
+                pass
+    return jsonify({"prepared": done})
+
+
+# ── API: BGM 미리듣기 ────────────────────────────────────────────
+@app.get("/api/bgm/styles")
+def api_bgm_styles():
+    return jsonify([{"id": k, "bpm": v["bpm"], "desc": v["desc"]}
+                    for k, v in bgm_mod.PRESETS.items()])
+
+
+@app.get("/api/bgm/preview")
+def api_bgm_preview():
+    style = request.args.get("style", "cheerful")
+    if style not in bgm_mod.PRESETS:
+        return "", 404
+    dst = cache_dir() / f"preview_{style}.wav"
+    if not dst.exists():
+        bgm_mod.write_wav(bgm_mod.generate(style, 10.0), dst)
+    return send_file(dst, mimetype="audio/wav", conditional=True)
+
+
+# ── API: 설정 ────────────────────────────────────────────────────
+CONFIG = lambda: PROJECT / "config.yaml"
+
+
+@app.get("/api/config")
+def api_config_get():
+    if CONFIG().exists():
+        return jsonify(yaml.safe_load(CONFIG().read_text(encoding="utf-8")) or {})
+    return jsonify({})
+
+
+@app.post("/api/config")
+def api_config_save():
+    cfg = request.json or {}
+    CONFIG().write_text(
+        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False, width=200),
+        encoding="utf-8")
+    return jsonify({"saved": str(CONFIG())})
+
+
+# ── API: 렌더링 ──────────────────────────────────────────────────
+def _run_render(cfg):
+    with _lock:
+        _render.update(running=True, log=[], done=False, ok=False, outputs=[])
+    try:
+        CONFIG().write_text(
+            yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False, width=200),
+            encoding="utf-8")
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(HERE / "build.py"), str(CONFIG()),
+             "-o", str(out_dir())],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace")
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                with _lock:
+                    _render["log"].append(line)
+        rc = proc.wait()
+        name = cfg.get("output", "output")
+        outs = [f"{name}.mp4", f"{name}_nomusic.mp4", f"{name}_thumb.jpg"]
+        with _lock:
+            _render["ok"] = (rc == 0)
+            _render["outputs"] = [o for o in outs if (out_dir() / o).exists()] if rc == 0 else []
+    except Exception as e:
+        with _lock:
+            _render["log"].append(f"오류: {e}")
+            _render["ok"] = False
+    finally:
+        with _lock:
+            _render.update(running=False, done=True)
+
+
+@app.post("/api/render")
+def api_render():
+    with _lock:
+        if _render["running"]:
+            return jsonify({"error": "이미 렌더링 중입니다"}), 409
+    cfg = request.json or {}
+    if not cfg.get("clips"):
+        return jsonify({"error": "클립을 하나 이상 선택하세요"}), 400
+    threading.Thread(target=_run_render, args=(cfg,), daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.get("/api/render/status")
+def api_render_status():
+    with _lock:
+        return jsonify(dict(_render))
+
+
+@app.get("/api/out/<path:name>")
+def api_out(name):
+    p = (out_dir() / name).resolve()
+    if not str(p).startswith(str(out_dir().resolve())) or not p.is_file():
+        return "", 404
+    mime = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "video/mp4"
+    return send_file(p, mimetype=mime, conditional=True)
+
+
+@app.post("/api/reveal")
+def api_reveal():
+    """산출물 폴더를 탐색기/파인더로 연다."""
+    target = str(out_dir())
+    try:
+        s = platform.system()
+        if s == "Darwin":
+            subprocess.Popen(["open", target])
+        elif s == "Windows":
+            subprocess.Popen(["explorer", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
+        return jsonify({"opened": target})
+    except Exception as e:
+        return jsonify({"error": str(e), "path": target}), 500
+
+
+@app.get("/api/env")
+def api_env():
+    """시작 시 환경 점검 결과."""
+    font, font_err = None, None
+    try:
+        font = build_mod.resolve_font(None, PROJECT)
+    except build_mod.BuildError as e:
+        font_err = str(e)
+    return jsonify({
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "font": font, "font_error": font_err,
+        "project": str(PROJECT), "out": str(out_dir()),
+        "clips_dir": str(clips_dir()),
+    })
+
+
+@app.get("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
+
+
+def print_qr(text):
+    """터미널에 QR 을 그린다. qrcode 가 없으면 조용히 넘어간다."""
+    try:
+        import qrcode
+    except ImportError:
+        return False
+    q = qrcode.QRCode(border=1)
+    q.add_data(text)
+    q.make(fit=True)
+    m = q.get_matrix()
+    # 위아래 두 줄을 한 글자에 담아 절반 높이로 그린다
+    for y in range(0, len(m), 2):
+        row = ""
+        for x in range(len(m[0])):
+            top = m[y][x]
+            bot = m[y + 1][x] if y + 1 < len(m) else False
+            row += "█" if top and bot else "▀" if top else "▄" if bot else " "
+        print("    " + row)
+    return True
+
+
+def main():
+    global PROJECT, ACCESS_KEY
+    ap = argparse.ArgumentParser(description="숏폼 렌더러 대시보드")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--project", default=None, help="작업 폴더 (기본: app.py 위치)")
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--lan", action="store_true",
+                    help="같은 와이파이의 폰·태블릿에서도 접속 허용")
+    a = ap.parse_args()
+    if a.project:
+        PROJECT = Path(a.project).expanduser().resolve()
+    if shutil.which("ffmpeg") is None:
+        print("경고: ffmpeg 를 찾을 수 없습니다. 렌더링이 실패합니다.", file=sys.stderr)
+
+    host = "0.0.0.0" if a.lan else "127.0.0.1"
+    local = f"http://127.0.0.1:{a.port}"
+    if a.lan:
+        ACCESS_KEY = secrets.token_urlsafe(9)
+        phone = f"http://{lan_ip()}:{a.port}/?k={ACCESS_KEY}"
+        local = f"{local}/?k={ACCESS_KEY}"
+
+    print(f"\n  대시보드: {local}")
+    print(f"  작업 폴더: {PROJECT}")
+    print(f"  영상 넣는 곳: {clips_dir()}")
+    if a.lan:
+        print("\n  폰에서 열기 — 카메라로 아래 QR 을 찍거나 주소를 입력하세요")
+        print(f"  {phone}\n")
+        if not print_qr(phone):
+            print("    (QR 을 보려면: pip install qrcode)")
+        print("\n  같은 와이파이에 있어야 하고, 링크를 아는 기기만 접속됩니다.")
+        print("  이 창을 닫으면 접속도 끊깁니다.")
+    print()
+
+    if not a.no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(local)).start()
+    app.run(host=host, port=a.port, threaded=True)
+
+
+if __name__ == "__main__":
+    main()
