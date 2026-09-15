@@ -310,6 +310,43 @@ def concat(parts, dst, cfg, xfades=None, tmpdir=None):
     return total
 
 
+def mix_all(video, wav, narr, dst, music, audio, narration, total):
+    """나레이션이 있으면 그것을 중심에 두고 BGM·현장음을 눌러준다."""
+    nv = float(narration.get("volume", 1.0))
+    d = int(float(narration.get("delay", 0.0)) * 1000)
+    # 사이드체인 임계값. 낮을수록 세게 눌린다.
+    # 실측: 실제 현장음을 키로 0.045 → 약 9~12 dB, 0.02 → 약 15~18 dB 감쇠.
+    # 0.1 이상이면 키가 임계값에 못 미쳐 아무 일도 일어나지 않으니 올리지 말 것.
+    duck_bgm = float(narration.get("duck_music", 0.03))
+    duck_amb = float(narration.get("duck_ambient", 0.05))
+    bv = music["volume"] if music.get("style") not in (None, "none") else 0.0
+    fo = max(0.0, total - 1.0)
+
+    parts = [f"[2:a]adelay={d}|{d},aformat=fltp:48000:stereo,volume={nv},"
+             f"asplit=3[nar][nk1][nk2]"]
+    mixes = ["[nar]"]
+    if bv > 0:
+        parts.append(f"[1:a]aformat=fltp:48000:stereo,volume={bv}[mus]")
+        parts.append(f"[mus][nk1]sidechaincompress=threshold={duck_bgm}:ratio=12:"
+                     f"attack=15:release=420:makeup=1[musd]")
+        mixes.append("[musd]")
+    if audio["keep_original"]:
+        parts.append("[0:a]aformat=fltp:48000:stereo[voc]")
+        parts.append(f"[voc][nk2]sidechaincompress=threshold={duck_amb}:ratio=4:"
+                     f"attack=15:release=420:makeup=1[vocd]")
+        mixes.append("[vocd]")
+    parts.append(f"{''.join(mixes)}amix=inputs={len(mixes)}:duration=first:"
+                 f"dropout_transition=0,afade=t=out:st={fo:.3f}:d=0.9,"
+                 f"loudnorm=I={audio['loudness']}:TP=-1.5:LRA=11,aresample=48000[a]")
+
+    ins = ["-i", str(video)]
+    ins += ["-i", str(wav)] if bv > 0 else ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    ins += ["-i", str(narr)]
+    run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", ";".join(parts),
+         "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+         "-ar", "48000", "-movflags", "+faststart", "-map_metadata", "-1", str(dst)])
+
+
 def mix_music(video, wav, dst, music, audio, total):
     """BGM을 아래에 깔고, 현장음이 커지면 자동으로 눌러준다(사이드체인 더킹)."""
     vol = music["volume"]
@@ -349,6 +386,7 @@ def load_config(path):
     merged["font"] = cfg.get("font")
     merged["music"] = {**MUSIC_DEFAULTS, **(cfg.get("music") or {})}
     merged["audio"] = {**AUDIO_DEFAULTS, **(cfg.get("audio") or {})}
+    merged["narration"] = cfg.get("narration") or None
     merged["clips"] = cfg["clips"]
     merged["base"] = Path(path).resolve().parent
     return merged
@@ -387,7 +425,22 @@ def build(cfg_path, outdir):
         total = concat(parts, nomusic, cfg, xfades, tmp)
 
         final = outdir / f"{name}.mp4"
-        if cfg["music"]["style"] in (None, "none"):
+        narr = None
+        if cfg["narration"]:
+            narr = (cfg["base"] / cfg["narration"]["file"]).expanduser()
+            if not narr.exists():
+                raise BuildError(f"나레이션 파일을 찾을 수 없습니다: {narr}")
+
+        if narr:
+            wav = Path(tmp) / "bgm.wav"
+            if cfg["music"]["style"] not in (None, "none"):
+                print(f"  BGM 생성 중 ({cfg['music']['style']})...")
+                bgm_mod.write_wav(
+                    bgm_mod.generate(cfg["music"]["style"], total, cfg["music"]["bpm"]), wav)
+            print("  나레이션 믹싱 중...")
+            mix_all(nomusic, wav, narr, final, cfg["music"], cfg["audio"],
+                    cfg["narration"], total)
+        elif cfg["music"]["style"] in (None, "none"):
             shutil.copy(nomusic, final)
         else:
             print(f"  BGM 생성 중 ({cfg['music']['style']})...")
