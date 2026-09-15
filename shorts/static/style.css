@@ -96,6 +96,14 @@ header .grow { flex: 1; }
 .banner.err { background: #3a2226; color: #ffb4b8; }
 .banner.ok { background: #15321f; color: #9ff0c5; }
 .empty { color: var(--dim); font-size: 12px; text-align: center; padding: 18px 0; }
+.rules { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 14px; margin: 8px 0; font-size: 12px; color: var(--dim); }
+.rules ul { margin: 0; padding-left: 16px; }
+.rules li { margin: 4px 0; }
+.rules b { color: var(--text); font-weight: 600; }
+.askbox { margin-top: 8px; font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.5; resize: vertical; }
+#conceptEcho { margin: 6px 0 2px; }
 
 @media (max-width: 1100px) {
   .wrap { grid-template-columns: 1fr; }

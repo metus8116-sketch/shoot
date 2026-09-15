@@ -276,6 +276,63 @@ function renderCaps() {
   });
 }
 
+/* ── 컨셉 ──────────────────────────────────────────────── */
+$("concept").oninput = showConcept;
+
+function showConcept() {
+  const v = $("concept").value.trim();
+  const el = $("conceptEcho");
+  el.hidden = !v;
+  el.textContent = v ? `컨셉: ${v}` : "";
+}
+
+$("showRules").onclick = () => {
+  const r = $("rules");
+  r.hidden = !r.hidden;
+  $("showRules").textContent = r.hidden ? "쓰는 법" : "접기";
+};
+
+/* 지금 상태를 그대로 담은 요청문을 만든다. 복사해서 Claude 에게 붙여넣으면
+   컨셉·클립·길이·이미 쓴 자막까지 한 번에 전달된다. */
+function askText() {
+  const list = chosen();
+  const L = [];
+  L.push(`숏폼 자막을 써주세요.`);
+  const c = $("concept").value.trim();
+  L.push(c ? `\n컨셉: ${c}` : `\n컨셉: (아직 안 정했습니다. 영상 보고 제안해 주세요)`);
+  L.push(`\n클립 ${list.length}개, 순서대로:`);
+  list.forEach((clip, i) => {
+    const st = sel.get(clip.name);
+    const dur = trimActive(st) ? (st.trim[1] - st.trim[0]).toFixed(1) : clip.duration;
+    L.push(`  ${i + 1}. ${clip.name} — ${dur}초`
+      + (trimActive(st) ? ` (원본 ${st.trim[0]}~${st.trim[1]}초 구간만 사용)` : ""));
+    const caps = st.captions.filter((x) => (x.text || "").trim());
+    caps.forEach((x) => L.push(`     현재 자막: "${x.text}" (${x.at[0]}~${x.at[1]}초)`));
+  });
+  L.push(`\n각 클립에 어떤 자막을 몇 초에 넣을지 알려주세요.`);
+  L.push(`업로드 문구와 해시태그도 함께 부탁드립니다.`);
+  return L.join("\n");
+}
+
+$("copyAsk").onclick = async () => {
+  const list = chosen();
+  if (!list.length) { banner("err", "클립을 먼저 체크하세요."); return; }
+  const text = askText();
+  const box = $("askBox");
+  try {
+    await navigator.clipboard.writeText(text);
+    $("copyAsk").textContent = "복사했습니다 — Claude 에게 붙여넣으세요";
+    setTimeout(() => $("copyAsk").textContent = "자막을 Claude 에게 부탁할 요청문 복사", 2600);
+    box.hidden = true;
+  } catch {
+    // 폰에서 http 로 접속하면 클립보드가 막힌다 — 직접 복사하도록 보여준다
+    box.hidden = false;
+    box.value = text;
+    box.select();
+    $("copyAsk").textContent = "아래 내용을 길게 눌러 복사하세요";
+  }
+};
+
 /* ── 업로드 ────────────────────────────────────────────── */
 $("pick").onclick = (e) => { e.preventDefault(); $("file").click(); };
 $("file").onchange = () => upload($("file").files);
@@ -326,6 +383,7 @@ $("transition").oninput = (e) => $("trLabel").textContent = e.target.value;
 function buildConfig() {
   const list = chosen();
   return {
+    concept: $("concept").value.trim(),      // 렌더링에는 영향 없고 설정 파일에 남는다
     output: $("outName").value.trim() || "output",
     transition: parseFloat($("transition").value),
     music: {
@@ -382,9 +440,44 @@ async function poll() {
 $("reveal").onclick = () => api("/api/reveal", { method: "POST" }).catch(() => {});
 
 /* ── 시작 ──────────────────────────────────────────────── */
+async function restoreConfig() {
+  let cfg;
+  try { cfg = await api("/api/config"); } catch { return; }
+  if (!cfg || !Object.keys(cfg).length) return;
+  if (cfg.concept) $("concept").value = cfg.concept;
+  if (cfg.output) $("outName").value = cfg.output;
+  if (cfg.transition != null) {
+    $("transition").value = cfg.transition;
+    $("trLabel").textContent = cfg.transition;
+  }
+  const m = cfg.music || {};
+  if (m.style && [...$("style").options].some((o) => o.value === m.style)) $("style").value = m.style;
+  if (m.volume != null) { $("vol").value = m.volume; $("volLabel").textContent = m.volume; }
+  if (m.duck != null) $("duck").checked = !!m.duck;
+  if (cfg.audio && cfg.audio.keep_original != null) $("keepOrig").checked = !!cfg.audio.keep_original;
+
+  // 클립별 자막·구간은 파일 이름으로 맞춰 되살린다
+  (cfg.clips || []).forEach((c, i) => {
+    const name = (c.file || "").split("/").pop();
+    const st = sel.get(name);
+    if (!st) return;
+    st.on = true;
+    st.order = i;
+    if (Array.isArray(c.trim)) { st.trim = c.trim; st.trimOn = true; }
+    if (Array.isArray(c.captions)) {
+      st.captions = c.captions.map((x) => ({
+        text: x.text || "", at: x.at || [0, 3],
+        y: x.y ?? 0.8, size: x.size ?? 56 }));
+    }
+  });
+  showDesc(); showConcept();
+}
+
 (async function init() {
   try { await loadEnv(); } catch {}
   await loadStyles();
   await loadClips();
+  await restoreConfig();
+  renderClips();
   updateTrimUI();
 })();

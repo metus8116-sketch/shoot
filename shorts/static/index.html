@@ -63,15 +63,37 @@
 
       <div class="row" style="margin-top:14px">
         <strong style="flex:1">자막</strong>
+        <button class="sm" id="showRules">쓰는 법</button>
         <button class="sm" id="addCap">+ 현재 위치에 추가</button>
       </div>
+      <div id="conceptEcho" class="hint" hidden></div>
+      <div id="rules" class="rules" hidden>
+        <ul>
+          <li><b>10자 안팎으로</b> 짧게. 3~4초 안에 읽혀야 합니다</li>
+          <li><b>설명하지 말고 관점을</b> — "미끄럼틀 성공" 보다 "여기 갔다 저기 갔다"</li>
+          <li><b>아이 반말과 엄마 존댓말을 번갈아</b> — "엄마 운동 부족이야" / "잠시도 가만히 못 있어요"</li>
+          <li><b>일상을 다른 틀에</b> — 놀이터를 출근으로, 반복을 PT로</li>
+          <li><b>어울리지 않는 격식체</b>로 웃기기 — "시소는 아직 연구 중입니다"</li>
+          <li><b>이야기 하나가 클립을 관통</b>하게</li>
+        </ul>
+      </div>
       <div id="caps"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="sm" id="copyAsk">자막을 Claude 에게 부탁할 요청문 복사</button>
+      </div>
+      <textarea id="askBox" class="askbox" hidden readonly rows="8"></textarea>
     </div>
   </div>
 
   <!-- 오른쪽: 음악 + 렌더 -->
   <div class="panel">
     <h2>음악 · 출력</h2>
+
+    <div class="field">
+      <label>컨셉 한 줄 — 이 영상을 무슨 이야기로 만들지</label>
+      <input id="concept" placeholder="예) 엄마를 운동시켜주는 효녀">
+      <div class="hint">자막을 쓸 때 이 방향을 유지하면 영상이 하나로 읽힙니다.</div>
+    </div>
 
     <div class="field">
       <label>파일 이름</label>
