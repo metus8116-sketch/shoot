@@ -48,12 +48,16 @@
       </div>
 
       <div class="field">
-        <label>구간 자르기 — 이 범위만 사용합니다 (얼굴 나온 부분 빼기 등)</label>
+        <label>구간 지정 — 얼굴 나온 부분을 빼거나, 쓸 구간만 남길 때</label>
         <div class="row">
           <input type="number" id="trimA" step="0.05" min="0" placeholder="시작">
           <input type="number" id="trimB" step="0.05" min="0" placeholder="끝">
           <button class="sm" id="trimNow">현재 위치</button>
-          <button class="sm" id="trimClear">해제</button>
+          <button class="sm" id="trimClear">지우기</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input type="checkbox" id="trimOn" style="width:auto;accent-color:var(--accent)">
+          <label for="trimOn" style="margin:0" id="trimOnLabel">이 구간만 사용</label>
         </div>
       </div>
 
@@ -105,6 +109,12 @@
     </div>
 
     <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+
+    <div class="field row">
+      <input type="checkbox" id="trimAll" checked style="width:auto;accent-color:var(--accent)">
+      <label for="trimAll" style="margin:0">구간 지정 적용하기</label>
+    </div>
+    <div class="hint" id="trimSummary" style="margin-top:-6px;margin-bottom:12px"></div>
 
     <div id="msg"></div>
     <button class="primary" id="render" style="width:100%">렌더링</button>

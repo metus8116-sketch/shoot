@@ -291,7 +291,7 @@ def api_env():
     """시작 시 환경 점검 결과."""
     font, font_err = None, None
     try:
-        font = build_mod.resolve_font(None)
+        font = build_mod.resolve_font(None, PROJECT)
     except build_mod.BuildError as e:
         font_err = str(e)
     return jsonify({

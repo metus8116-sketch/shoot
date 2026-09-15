@@ -38,15 +38,43 @@ CAPTION_DEFAULTS = {"y": 0.80, "size": 56, "fade": 0.4}
 MUSIC_DEFAULTS = {"style": "cheerful", "bpm": None, "volume": 0.42, "duck": True}
 AUDIO_DEFAULTS = {"keep_original": True, "loudness": -14}
 
+# 자막용으로는 굵은 웨이트가 가독성이 좋다. 앞에 올수록 우선 사용된다.
+PREFERRED_WEIGHTS = ["ExtraBold", "Bold", "SemiBold"]
+
 FONT_CANDIDATES = {
-    "Darwin": ["/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+    "Darwin": ["/Library/Fonts/Pretendard-ExtraBold.otf",
+               "/Library/Fonts/Pretendard-Bold.otf",
+               str(Path.home() / "Library/Fonts/Pretendard-ExtraBold.otf"),
+               str(Path.home() / "Library/Fonts/Pretendard-Bold.otf"),
                "/Library/Fonts/NanumGothicBold.ttf",
-               "/Library/Fonts/NanumGothic.ttf"],
-    "Windows": ["C:/Windows/Fonts/malgunbd.ttf", "C:/Windows/Fonts/malgun.ttf"],
-    "Linux": ["/usr/share/fonts/truetype/nanum/NanumSquareRoundB.ttf",
+               "/System/Library/Fonts/Supplemental/AppleGothic.ttf"],
+    "Windows": ["C:/Windows/Fonts/Pretendard-ExtraBold.otf",
+                "C:/Windows/Fonts/Pretendard-Bold.otf",
+                str(Path.home() / "AppData/Local/Microsoft/Windows/Fonts/Pretendard-ExtraBold.otf"),
+                str(Path.home() / "AppData/Local/Microsoft/Windows/Fonts/Pretendard-Bold.otf"),
+                "C:/Windows/Fonts/malgunbd.ttf", "C:/Windows/Fonts/malgun.ttf"],
+    "Linux": ["/usr/share/fonts/opentype/pretendard/Pretendard-ExtraBold.otf",
+              "/usr/share/fonts/truetype/pretendard/Pretendard-Bold.otf",
+              "/usr/share/fonts/truetype/nanum/NanumSquareRoundB.ttf",
               "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
               "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"],
 }
+
+
+def bundled_fonts(base):
+    """프로젝트 fonts/ 폴더에 넣어둔 폰트. 설치 없이 그냥 넣으면 쓰인다."""
+    d = base / "fonts"
+    if not d.is_dir():
+        return []
+    found = sorted(f for f in d.iterdir()
+                   if f.suffix.lower() in (".ttf", ".otf", ".ttc"))
+    # 굵은 웨이트를 먼저 쓴다
+    def rank(f):
+        for i, w in enumerate(PREFERRED_WEIGHTS):
+            if w.lower() in f.stem.lower():
+                return i
+        return len(PREFERRED_WEIGHTS)
+    return [str(f) for f in sorted(found, key=rank)]
 
 
 class BuildError(Exception):
@@ -76,17 +104,25 @@ def duration_of(path):
     return float(r.stdout.strip())
 
 
-def resolve_font(cfg_font):
+def resolve_font(cfg_font, base=None):
+    """쓸 폰트를 정한다: 설정값 → 프로젝트 fonts/ 폴더 → 시스템 설치 폰트."""
+    base = base or Path(__file__).resolve().parent
     if cfg_font:
-        if not Path(cfg_font).exists():
+        p = Path(cfg_font).expanduser()
+        if not p.is_absolute() and not p.exists():
+            p = base / cfg_font          # fonts/Pretendard-Bold.otf 처럼 상대 경로도 허용
+        if not p.exists():
             raise BuildError(f"지정한 폰트를 찾을 수 없습니다: {cfg_font}")
-        return cfg_font
-    for c in FONT_CANDIDATES.get(platform.system(), FONT_CANDIDATES["Linux"]):
+        return str(p.resolve())
+    for c in bundled_fonts(base) + FONT_CANDIDATES.get(platform.system(),
+                                                       FONT_CANDIDATES["Linux"]):
         if Path(c).exists():
             return c
     raise BuildError(
-        "한글 폰트를 찾지 못했습니다. 설정 파일에 font 항목으로 경로를 직접 지정하세요.\n"
-        "  예) font: /Library/Fonts/NanumGothicBold.ttf")
+        "한글 폰트를 찾지 못했습니다. 다음 중 하나를 하세요.\n"
+        f"  1) 폰트 파일(.otf/.ttf)을 {base / 'fonts'} 폴더에 넣기\n"
+        "     Pretendard 추천: https://github.com/orioncactus/pretendard/releases\n"
+        "  2) 설정 파일에 경로 지정 — font: C:/Windows/Fonts/malgunbd.ttf")
 
 
 def ff_path(p):
@@ -228,7 +264,7 @@ def load_config(path):
 
 def build(cfg_path, outdir):
     cfg = load_config(cfg_path)
-    font = resolve_font(cfg["font"])
+    font = resolve_font(cfg["font"], cfg["base"])
     outdir = Path(outdir); outdir.mkdir(parents=True, exist_ok=True)
     name = cfg["output"]
 

@@ -32,7 +32,7 @@ function banner(kind, text) {
 async function loadClips() {
   clips = await api("/api/clips");
   clips.forEach((c, i) => {
-    if (!sel.has(c.name)) sel.set(c.name, { on: false, order: i, captions: [], trim: null });
+    if (!sel.has(c.name)) sel.set(c.name, { on: false, order: i, captions: [], trim: null, trimOn: true });
   });
   renderClips();
 }
@@ -56,7 +56,7 @@ function renderClips() {
       <img src="/api/thumb/${encodeURIComponent(c.name)}" alt="">
       <div class="meta">
         <div class="nm" title="${c.name}">${c.name}</div>
-        <div class="sub">${c.duration}초 · ${c.size_mb}MB${s.trim ? " · 잘림" : ""}${s.captions.length ? ` · 자막 ${s.captions.length}` : ""}</div>
+        <div class="sub">${c.duration}초 · ${c.size_mb}MB${trimActive(s) ? " · 구간 " + s.trim[0] + "~" + s.trim[1] + "초" : ""}${s.captions.length ? ` · 자막 ${s.captions.length}` : ""}</div>
       </div>
       <div class="order">
         <button data-up ${idx === 0 ? "disabled" : ""}>▲</button>
@@ -64,7 +64,7 @@ function renderClips() {
       </div>`;
     const cb = el.querySelector("input");
     // 목록 전체를 다시 그리면 포커스·스크롤이 튀므로 상태만 바꾼다
-    cb.onchange = (ev) => { s.on = ev.target.checked; };
+    cb.onchange = (ev) => { s.on = ev.target.checked; updateTrimUI(); };
     cb.onclick = (ev) => ev.stopPropagation();
     el.querySelector("[data-up]").onclick = (ev) => { ev.stopPropagation(); swap(sorted, idx, idx - 1); };
     el.querySelector("[data-dn]").onclick = (ev) => { ev.stopPropagation(); swap(sorted, idx, idx + 1); };
@@ -97,6 +97,8 @@ function openClip(name) {
   const s = sel.get(name);
   $("trimA").value = s.trim ? s.trim[0] : "";
   $("trimB").value = s.trim ? s.trim[1] : "";
+  $("trimOn").checked = s.trimOn !== false;
+  updateTrimUI();
   renderCaps();
   renderClips();
 }
@@ -137,7 +139,7 @@ function drawCapPreview() {
   const w = v.clientWidth, h = v.clientHeight;
   const scale = w / 1080;                       // 실제 출력은 1080 폭
   const s = sel.get(cur);
-  const off = s.trim ? s.trim[0] : 0;           // 자막 시각은 잘린 구간 기준
+  const off = trimActive(s) ? s.trim[0] : 0;    // 자막 시각은 잘린 구간 기준
   layer.innerHTML = "";
   s.captions.forEach((c) => {
     const a = (c.at?.[0] ?? 0) + off, b = (c.at?.[1] ?? 0) + off;
@@ -160,21 +162,51 @@ $("trimNow").onclick = () => {
 };
 $("trimClear").onclick = () => { $("trimA").value = ""; $("trimB").value = ""; saveTrim(); };
 $("trimA").oninput = $("trimB").oninput = saveTrim;
+$("trimOn").onchange = () => {
+  if (cur) sel.get(cur).trimOn = $("trimOn").checked;
+  updateTrimUI(); renderClips(); drawCapPreview();
+};
+$("trimAll").onchange = () => { updateTrimUI(); renderClips(); };
+
+/* 구간이 실제로 적용되는 조건: 값이 있고 + 클립별 토글 켜짐 + 전체 토글 켜짐 */
+function trimActive(s) {
+  return !!(s.trim && s.trimOn !== false && $("trimAll").checked);
+}
+
+function updateTrimUI() {
+  const s = cur ? sel.get(cur) : null;
+  const has = !!(s && s.trim);
+  $("trimOn").disabled = !has;
+  $("trimOnLabel").textContent = !has
+    ? "구간을 먼저 지정하세요"
+    : (s.trimOn === false ? "이 구간 무시하고 전체 사용" : "이 구간만 사용");
+  const withTrim = chosen().filter((c) => sel.get(c.name).trim);
+  const active = withTrim.filter((c) => trimActive(sel.get(c.name))).length;
+  const off = withTrim.length - active;
+  $("trimSummary").textContent =
+    !withTrim.length ? "구간을 지정한 클립이 없습니다. 전체를 씁니다."
+    : !active        ? `구간이 지정된 클립 ${withTrim.length}개가 있지만, 지금은 전체를 씁니다.`
+    : `클립 ${active}개를 지정 구간만 잘라서 씁니다.` + (off ? ` (${off}개는 해제됨)` : "");
+}
 
 function saveTrim() {
   if (!cur) return;
   const a = parseFloat($("trimA").value), b = parseFloat($("trimB").value);
-  sel.get(cur).trim = (!isNaN(a) && !isNaN(b) && b > a) ? [a, b] : null;
-  renderClips();
+  const s = sel.get(cur);
+  const had = !!s.trim;
+  s.trim = (!isNaN(a) && !isNaN(b) && b > a) ? [a, b] : null;
+  if (s.trim && !had) s.trimOn = true;   // 새로 지정하면 바로 적용
+  updateTrimUI(); renderClips(); drawCapPreview();
 }
 
 /* ── 자막 편집 ─────────────────────────────────────────── */
 $("addCap").onclick = () => {
   if (!cur) return;
   const s = sel.get(cur);
-  const off = s.trim ? s.trim[0] : 0;
+  const off = trimActive(s) ? s.trim[0] : 0;
   const t = Math.max(0, vid().currentTime - off);
-  const end = Math.min(t + 3.5, (s.trim ? s.trim[1] - s.trim[0] : vid().duration) || t + 3.5);
+  const end = Math.min(t + 3.5,
+    (trimActive(s) ? s.trim[1] - s.trim[0] : vid().duration) || t + 3.5);
   s.captions.push({ text: "", at: [+fmt(t), +fmt(end)], y: 0.8, size: 56 });
   renderCaps(); renderClips();
 };
@@ -214,7 +246,7 @@ function renderCaps() {
       e.target.previousElementSibling.textContent = `글자 크기 ${c.size}`; drawCapPreview();
     };
     q("[data-now]").onclick = () => {
-      const off = s.trim ? s.trim[0] : 0;
+      const off = trimActive(s) ? s.trim[0] : 0;
       const t = Math.max(0, vid().currentTime - off);
       c.at = [+fmt(t), +fmt(t + (c.at[1] - c.at[0]))];
       renderCaps(); drawCapPreview();
@@ -285,7 +317,7 @@ function buildConfig() {
     clips: list.map((c) => {
       const s = sel.get(c.name);
       const o = { file: `clips/${c.name}` };
-      if (s.trim) o.trim = s.trim;
+      if (trimActive(s)) o.trim = s.trim;
       const caps = s.captions.filter((x) => (x.text || "").trim());
       if (caps.length) o.captions = caps.map((x) => ({
         text: x.text, at: x.at, y: x.y, size: x.size }));
@@ -334,4 +366,5 @@ $("reveal").onclick = () => api("/api/reveal", { method: "POST" }).catch(() => {
   try { await loadEnv(); } catch {}
   await loadStyles();
   await loadClips();
+  updateTrimUI();
 })();
