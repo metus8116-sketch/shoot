@@ -32,6 +32,14 @@ pip install -r requirements.txt
 
 ## 사용법 1 — 대시보드 (권장)
 
+**Windows** — `start.bat` 더블클릭
+**macOS** — `start.command` 더블클릭
+
+처음 실행하면 가상환경을 만들고 필요한 라이브러리를 설치한 뒤 브라우저를 엽니다.
+두 번째부터는 바로 열립니다.
+
+터미널에서 직접 실행하려면:
+
 ```bash
 python app.py
 ```
