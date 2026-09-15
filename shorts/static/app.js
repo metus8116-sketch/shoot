@@ -19,7 +19,7 @@ async function loadEnv() {
   $("env").innerHTML =
     `<span class="${e.ffmpeg ? "good" : "bad"}">ffmpeg ${e.ffmpeg ? "확인" : "없음"}</span>` +
     `<span class="${e.font ? "good" : "bad"}">폰트 ${e.font ? "확인" : "없음"}</span>` +
-    `<span>${e.clips_dir}</span>`;
+    `<span class="path">${e.clips_dir}</span>`;
   if (!e.ffmpeg) banner("err", "ffmpeg 를 찾을 수 없습니다. 설치 후 서버를 다시 시작하세요.");
   else if (!e.font) banner("err", "한글 폰트를 찾지 못했습니다. config.yaml 에 font 경로를 지정하세요.");
 }

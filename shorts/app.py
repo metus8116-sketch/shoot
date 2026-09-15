@@ -9,6 +9,8 @@
 import argparse
 import json
 import platform
+import secrets
+import socket
 import shutil
 import subprocess
 import sys
@@ -31,6 +33,40 @@ VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm"}
 
 _render = {"running": False, "log": [], "done": False, "ok": False, "outputs": []}
 _lock = threading.Lock()
+
+# 같은 와이파이의 다른 기기(폰)에서 접속할 때만 쓰는 열쇠.
+# 집에 방문한 사람 등 같은 망의 누구나 아이 영상을 보게 되는 일을 막는다.
+ACCESS_KEY = None
+
+
+def lan_ip():
+    """이 컴퓨터가 공유기에서 쓰는 주소를 찾는다."""
+    s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s_.connect(("8.8.8.8", 80))       # 실제로 보내지는 않고 경로만 확인
+        return s_.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s_.close()
+
+
+@app.before_request
+def guard():
+    if ACCESS_KEY is None:
+        return None                       # 내 컴퓨터에서만 쓰는 모드
+    if request.cookies.get("k") == ACCESS_KEY:
+        return None
+    if request.args.get("k") == ACCESS_KEY:
+        return None
+    return ("이 주소로 접속하려면 PC 화면에 표시된 링크를 그대로 열어야 합니다.", 403)
+
+
+@app.after_request
+def set_key_cookie(resp):
+    if ACCESS_KEY and request.args.get("k") == ACCESS_KEY:
+        resp.set_cookie("k", ACCESS_KEY, samesite="Lax", max_age=60 * 60 * 12)
+    return resp
 
 
 # ── 경로 유틸 ────────────────────────────────────────────────────
@@ -326,24 +362,63 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+def print_qr(text):
+    """터미널에 QR 을 그린다. qrcode 가 없으면 조용히 넘어간다."""
+    try:
+        import qrcode
+    except ImportError:
+        return False
+    q = qrcode.QRCode(border=1)
+    q.add_data(text)
+    q.make(fit=True)
+    m = q.get_matrix()
+    # 위아래 두 줄을 한 글자에 담아 절반 높이로 그린다
+    for y in range(0, len(m), 2):
+        row = ""
+        for x in range(len(m[0])):
+            top = m[y][x]
+            bot = m[y + 1][x] if y + 1 < len(m) else False
+            row += "█" if top and bot else "▀" if top else "▄" if bot else " "
+        print("    " + row)
+    return True
+
+
 def main():
-    global PROJECT
+    global PROJECT, ACCESS_KEY
     ap = argparse.ArgumentParser(description="숏폼 렌더러 대시보드")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--project", default=None, help="작업 폴더 (기본: app.py 위치)")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--lan", action="store_true",
+                    help="같은 와이파이의 폰·태블릿에서도 접속 허용")
     a = ap.parse_args()
     if a.project:
         PROJECT = Path(a.project).expanduser().resolve()
     if shutil.which("ffmpeg") is None:
         print("경고: ffmpeg 를 찾을 수 없습니다. 렌더링이 실패합니다.", file=sys.stderr)
-    url = f"http://127.0.0.1:{a.port}"
-    print(f"\n  대시보드: {url}")
+
+    host = "0.0.0.0" if a.lan else "127.0.0.1"
+    local = f"http://127.0.0.1:{a.port}"
+    if a.lan:
+        ACCESS_KEY = secrets.token_urlsafe(9)
+        phone = f"http://{lan_ip()}:{a.port}/?k={ACCESS_KEY}"
+        local = f"{local}/?k={ACCESS_KEY}"
+
+    print(f"\n  대시보드: {local}")
     print(f"  작업 폴더: {PROJECT}")
-    print(f"  영상 넣는 곳: {clips_dir()}\n")
+    print(f"  영상 넣는 곳: {clips_dir()}")
+    if a.lan:
+        print("\n  폰에서 열기 — 카메라로 아래 QR 을 찍거나 주소를 입력하세요")
+        print(f"  {phone}\n")
+        if not print_qr(phone):
+            print("    (QR 을 보려면: pip install qrcode)")
+        print("\n  같은 와이파이에 있어야 하고, 링크를 아는 기기만 접속됩니다.")
+        print("  이 창을 닫으면 접속도 끊깁니다.")
+    print()
+
     if not a.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=a.port, threaded=True)
+        threading.Timer(1.0, lambda: webbrowser.open(local)).start()
+    app.run(host=host, port=a.port, threaded=True)
 
 
 if __name__ == "__main__":
