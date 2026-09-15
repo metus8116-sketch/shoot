@@ -182,13 +182,62 @@ def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None):
          str(dst)])
 
 
-def concat(parts, dst, cfg):
-    """크로스페이드로 이어붙이고 앞뒤에 페이드를 넣는다."""
+HARD_CUT = 0.06     # 이보다 짧은 전환은 겹치지 않고 그냥 이어붙인다
+
+
+def _join_fast(parts, dst, tmpdir):
+    """같은 규격의 파일들을 다시 인코딩하지 않고 이어붙인다.
+
+    겹침(xfade)은 앞의 결과물을 계속 다시 처리하므로 클립이 늘수록
+    급격히 느려진다. 하드컷 구간은 이 방식으로 처리해 그 비용을 없앤다.
+    """
+    lst = Path(tmpdir) / f"{dst.stem}_list.txt"
+    lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts), encoding="utf-8")
+    run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
+         "-i", str(lst), "-c", "copy", "-map_metadata", "-1", str(dst)])
+    return dst
+
+
+def concat(parts, dst, cfg, xfades=None, tmpdir=None):
+    """크로스페이드로 이어붙이고 앞뒤에 페이드를 넣는다.
+
+    xfades[i] 는 parts[i] 와 parts[i+1] 사이의 전환 길이. 클립마다 다르게
+    줄 수 있어, 같은 장면을 빠르게 반복하는 연출도 만들 수 있다.
+    """
     durs = [duration_of(p) for p in parts]
-    xf = cfg["transition"]
+    n = len(parts)
+    if xfades is None:
+        xfades = [cfg["transition"]] * (n - 1)
+
     for i, d in enumerate(durs):
-        if d <= xf + 0.1:
-            raise BuildError(f"{parts[i].name} 이 전환 길이보다 짧습니다 ({d:.2f}초)")
+        inc = xfades[i - 1] if i > 0 else 0.0
+        out = xfades[i] if i < n - 1 else 0.0
+        if d <= max(inc, out) + 0.05:
+            raise BuildError(
+                f"{parts[i].name} 이 맞닿은 전환보다 짧습니다 "
+                f"(길이 {d:.2f}초, 전환 {max(inc, out):.2f}초). "
+                f"구간을 늘리거나 transition 을 줄이세요.")
+
+    # 하드컷으로 이어지는 클립들을 먼저 한 덩어리로 합친다.
+    # 겹침 단계 수가 줄어 렌더링 시간이 크게 짧아진다.
+    if tmpdir is not None and any(x < HARD_CUT for x in xfades):
+        groups, cur = [], [0]
+        for i in range(1, n):
+            if xfades[i - 1] < HARD_CUT:
+                cur.append(i)          # 앞 클립과 하드컷 → 같은 덩어리
+            else:
+                groups.append(cur)     # 겹침이 필요 → 덩어리를 끊는다
+                cur = [i]
+        groups.append(cur)
+        merged, new_xf = [], []
+        for k, g in enumerate(groups):
+            merged.append(parts[g[0]] if len(g) == 1
+                          else _join_fast([parts[j] for j in g],
+                                          Path(tmpdir) / f"seg{k}.mp4", tmpdir))
+            if k < len(groups) - 1:
+                new_xf.append(xfades[g[-1]])
+        if len(merged) < n:
+            return concat(merged, dst, cfg, new_xf, None)
 
     inputs = []
     for p in parts:
@@ -196,7 +245,8 @@ def concat(parts, dst, cfg):
 
     vg, ag, running = [], [], durs[0]
     vprev, aprev = "0:v", "0:a"
-    for i in range(1, len(parts)):
+    for i in range(1, n):
+        xf = xfades[i - 1]
         offset = running - xf
         vg.append(f"[{vprev}][{i}:v]xfade=transition=fade:duration={xf}:offset={offset:.3f}[v{i}]")
         ag.append(f"[{aprev}][{i}:a]acrossfade=d={xf}[a{i}]")
@@ -285,7 +335,9 @@ def build(cfg_path, outdir):
 
         print("  클립 연결 중...")
         nomusic = outdir / f"{name}_nomusic.mp4"
-        total = concat(parts, nomusic, cfg)
+        # 클립마다 transition 을 따로 줄 수 있다 (앞 클립과의 전환 길이)
+        xfades = [float(c.get("transition", cfg["transition"])) for c in cfg["clips"][1:]]
+        total = concat(parts, nomusic, cfg, xfades, tmp)
 
         final = outdir / f"{name}.mp4"
         if cfg["music"]["style"] in (None, "none"):

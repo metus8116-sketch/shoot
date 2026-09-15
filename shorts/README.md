@@ -211,7 +211,26 @@ clips:
 | `crf` | `23` | 화질 (낮을수록 고화질·큰 용량) |
 | `font` | 자동 | 한글 폰트 경로 |
 
-클립별 옵션으로 `trim: [시작초, 끝초]` 를 넣으면 그 구간만 사용합니다.
+클립별 옵션
+
+| 키 | 설명 |
+|---|---|
+| `trim` | `[시작초, 끝초]` — 그 구간만 사용 |
+| `transition` | 앞 클립과의 전환 길이(초). 생략하면 전체 설정값 |
+
+`transition` 을 0.05 정도로 낮추고 같은 클립을 길이를 줄여가며 여러 번 넣으면
+같은 장면이 점점 빠르게 반복되는 연출이 됩니다.
+
+```yaml
+clips:
+  - {file: clips/shake.mov, trim: [0, 0.53], transition: 0.12}
+  - {file: clips/shake.mov, trim: [0, 0.30], transition: 0.05}
+  - {file: clips/shake.mov, trim: [0, 0.24], transition: 0.05}
+  - {file: clips/shake.mov, trim: [0, 0.20], transition: 0.05}
+```
+
+이때 자막을 조각마다 같은 내용으로 넣고 `fade: 0.02` 를 주면,
+글자는 가만히 있고 화면만 튀는 모양이 됩니다.
 
 ## BGM만 따로 뽑기
 
