@@ -182,11 +182,18 @@ def shine_filter(eff, w, h, fps):
             f"format=gbrp,geq={geq},scale={w}:{h}")
 
 
-def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None, effects=None):
-    """세로 규격 통일 + 구간 자르기 + 자막 굽기 + 오디오 정규화 + 메타데이터 제거."""
+def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None, effects=None,
+                   hold=0.0):
+    """세로 규격 통일 + 구간 자르기 + 자막 굽기 + 오디오 정규화 + 메타데이터 제거.
+
+    hold 를 주면 마지막 프레임을 그만큼 붙잡아 클립을 늘린다. 원본이 짧아
+    자막을 읽을 시간이 모자랄 때 쓴다. 자막은 멈춘 화면 위에도 이어진다.
+    """
     w, h = cfg["size"]
     chain = [f"scale={w}:{h}:force_original_aspect_ratio=increase",
              f"crop={w}:{h}", f"fps={cfg['fps']}", "format=yuv420p"]
+    if hold > 0:
+        chain.append(f"tpad=stop_mode=clone:stop_duration={hold}")
     chain += caption_filters(captions, tmpdir, font, idx)
     seek = []
     if trim:
@@ -195,6 +202,8 @@ def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None, effect
             raise BuildError(f"trim 구간이 잘못되었습니다: {trim}")
         seek = ["-ss", f"{start}", "-t", f"{end - start}"]
     aud = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+    if hold > 0:
+        aud += f",apad=pad_dur={hold}"      # 멈춘 구간만큼 무음을 더한다
     common = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(cfg["fps"]),
               "-c:a", "aac", "-b:a", "192k", "-ac", "2",
               "-map_metadata", "-1"]     # GPS·기기 정보 제거
@@ -205,7 +214,7 @@ def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None, effect
         return
 
     w, h = cfg["size"]
-    dur = (float(trim[1]) - float(trim[0])) if trim else duration_of(src)
+    dur = ((float(trim[1]) - float(trim[0])) if trim else duration_of(src)) + hold
     # 합성은 반드시 RGB 에서 한다. YUV 상태로 screen 블렌드를 하면
     # 색차 성분까지 섞여 화면 전체 색이 틀어진다.
     fc = ["[0:v]" + ",".join(chain) + ",format=gbrp[b0]"]
@@ -407,14 +416,16 @@ def build(cfg_path, outdir):
             # 내용이 같은 조각은 한 번만 만들어 재사용한다.
             # 같은 장면을 여러 번 반복하는 연출에서 인코딩 횟수가 크게 준다.
             key = json.dumps([clip["file"], clip.get("trim"), clip.get("captions"),
-                              clip.get("effects")], ensure_ascii=False, sort_keys=True)
+                              clip.get("effects"), clip.get("hold")],
+                             ensure_ascii=False, sort_keys=True)
             if key in cache:
                 parts.append(cache[key])
                 continue
             dst = Path(tmp) / f"part{i}.mp4"
             print(f"  [{i+1}/{len(cfg['clips'])}] {src.name} 처리 중...")
             normalize_clip(src, dst, cfg, font, clip.get("captions") or [], tmp, i,
-                           clip.get("trim"), clip.get("effects"))
+                           clip.get("trim"), clip.get("effects"),
+                           float(clip.get("hold", 0)))
             cache[key] = dst
             parts.append(dst)
 
