@@ -1,0 +1,26 @@
+output: 놀이터_효녀
+
+music:
+  style: cheerful
+  volume: 0.42
+  duck: true
+
+audio:
+  keep_original: true
+  loudness: -14
+
+clips:
+  - file: clips/IMG_6380.MOV
+    captions:
+      - {text: "우리집 아기 놀이터 출근 완료", at: [0.3, 3.8]}
+      - {text: "시소는 아직 연구 중입니다",   at: [8.5, 12.5]}
+
+  - file: clips/IMG_6381.MOV
+    captions:
+      - {text: "엄마 운동 부족이야",  at: [0.2, 4.1], y: 0.72, size: 60}
+      - {text: "효녀의 특별 PT 시작", at: [0.6, 4.1], y: 0.79, size: 60}
+
+  - file: clips/IMG_6385.MOV
+    captions:
+      - {text: "여기 갔다 저기 갔다",     at: [0.3, 4.2], size: 58}
+      - {text: "잠시도 가만히 못 있어요", at: [4.8, 8.8], size: 58}
