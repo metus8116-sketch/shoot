@@ -122,13 +122,19 @@ def caption_filters(captions, tmpdir, font, idx):
     return out
 
 
-def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx):
-    """세로 규격 통일 + 자막 굽기 + 오디오 정규화 + 메타데이터 제거."""
+def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None):
+    """세로 규격 통일 + 구간 자르기 + 자막 굽기 + 오디오 정규화 + 메타데이터 제거."""
     w, h = cfg["size"]
     chain = [f"scale={w}:{h}:force_original_aspect_ratio=increase",
              f"crop={w}:{h}", f"fps={cfg['fps']}", "format=yuv420p"]
     chain += caption_filters(captions, tmpdir, font, idx)
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(src),
+    seek = []
+    if trim:
+        start, end = float(trim[0]), float(trim[1])
+        if end <= start:
+            raise BuildError(f"trim 구간이 잘못되었습니다: {trim}")
+        seek = ["-ss", f"{start}", "-t", f"{end - start}"]
+    run(["ffmpeg", "-v", "error", "-y", *seek, "-i", str(src),
          "-vf", ",".join(chain),
          "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000",
          "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(cfg["fps"]),
@@ -234,7 +240,8 @@ def build(cfg_path, outdir):
                 raise BuildError(f"영상 파일을 찾을 수 없습니다: {src}")
             dst = Path(tmp) / f"part{i}.mp4"
             print(f"  [{i+1}/{len(cfg['clips'])}] {src.name} 처리 중...")
-            normalize_clip(src, dst, cfg, font, clip.get("captions") or [], tmp, i)
+            normalize_clip(src, dst, cfg, font, clip.get("captions") or [], tmp, i,
+                           clip.get("trim"))
             parts.append(dst)
 
         print("  클립 연결 중...")

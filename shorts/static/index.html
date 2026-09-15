@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>숏폼 렌더러</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>숏폼 렌더러</h1>
+  <div class="grow"></div>
+  <div class="env" id="env"></div>
+</header>
+
+<div class="wrap">
+
+  <!-- 왼쪽: 클립 -->
+  <div class="panel">
+    <h2>클립</h2>
+    <div id="clips"><div class="empty">불러오는 중...</div></div>
+    <div class="drop" id="drop">
+      영상을 끌어다 놓거나 <a href="#" id="pick">파일 선택</a>
+      <input type="file" id="file" multiple accept="video/*" hidden>
+    </div>
+    <div class="hint">체크한 클립이 위에서 아래 순서로 이어집니다.</div>
+  </div>
+
+  <!-- 가운데: 미리보기 + 자막 -->
+  <div class="panel">
+    <h2>미리보기 · 자막</h2>
+    <div id="noclip" class="empty">왼쪽에서 클립을 고르세요.</div>
+
+    <div id="editor" hidden>
+      <div class="stage" id="stage">
+        <video id="vid" playsinline preload="metadata"></video>
+        <div class="cap-layer" id="capLayer"></div>
+      </div>
+
+      <div class="tl">
+        <input type="range" id="seek" min="0" max="100" step="0.01" value="0">
+        <div class="row" style="justify-content:space-between">
+          <button class="sm" id="play">재생</button>
+          <span class="time" id="tnow">0.00 / 0.00 초</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>구간 자르기 — 이 범위만 사용합니다 (얼굴 나온 부분 빼기 등)</label>
+        <div class="row">
+          <input type="number" id="trimA" step="0.05" min="0" placeholder="시작">
+          <input type="number" id="trimB" step="0.05" min="0" placeholder="끝">
+          <button class="sm" id="trimNow">현재 위치</button>
+          <button class="sm" id="trimClear">해제</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:14px">
+        <strong style="flex:1">자막</strong>
+        <button class="sm" id="addCap">+ 현재 위치에 추가</button>
+      </div>
+      <div id="caps"></div>
+    </div>
+  </div>
+
+  <!-- 오른쪽: 음악 + 렌더 -->
+  <div class="panel">
+    <h2>음악 · 출력</h2>
+
+    <div class="field">
+      <label>파일 이름</label>
+      <input id="outName" value="내영상" spellcheck="false">
+    </div>
+
+    <div class="field">
+      <label>BGM 스타일</label>
+      <select id="style"></select>
+      <div class="hint" id="styleDesc"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="sm" id="prevBgm">미리듣기</button>
+        <audio id="bgmAudio" hidden></audio>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>BGM 크기 — <span id="volLabel">0.42</span></label>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.42">
+    </div>
+
+    <div class="field row">
+      <input type="checkbox" id="duck" checked style="width:auto;accent-color:var(--accent)">
+      <label for="duck" style="margin:0">현장음이 커지면 BGM 자동으로 낮추기</label>
+    </div>
+
+    <div class="field row">
+      <input type="checkbox" id="keepOrig" checked style="width:auto;accent-color:var(--accent)">
+      <label for="keepOrig" style="margin:0">현장음 유지</label>
+    </div>
+
+    <div class="field">
+      <label>클립 사이 전환 — <span id="trLabel">0.4</span>초</label>
+      <input type="range" id="transition" min="0.1" max="1.2" step="0.05" value="0.4">
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+
+    <div id="msg"></div>
+    <button class="primary" id="render" style="width:100%">렌더링</button>
+    <div class="bar" id="bar" hidden><i></i></div>
+    <div class="log" id="log" hidden></div>
+    <div id="result" hidden style="margin-top:12px">
+      <video id="outVid" controls playsinline style="width:100%;border-radius:8px;background:#000"></video>
+      <div class="row" style="margin-top:8px">
+        <button class="sm" id="reveal" style="flex:1">폴더 열기</button>
+      </div>
+      <div class="hint" id="outList"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
