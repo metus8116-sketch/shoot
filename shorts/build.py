@@ -161,7 +161,28 @@ def caption_filters(captions, tmpdir, font, idx):
     return out
 
 
-def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None):
+def shine_filter(eff, w, h, fps):
+    """화면을 대각선으로 훑고 지나가는 빛줄기를 만든다.
+
+    저해상도로 그린 뒤 키운다 — 부드러운 그라데이션이라 화질 손해가 없고
+    픽셀마다 식을 계산하는 비용이 크게 줄어든다.
+    """
+    ts, te = float(eff["at"][0]), float(eff["at"][1])
+    if te <= ts:
+        raise BuildError(f"효과 시간 범위가 잘못되었습니다: {eff['at']}")
+    k = float(eff.get("angle", 0.7))          # 기울기
+    width = float(eff.get("width", 34))       # 빛줄기 두께 (작을수록 가늘다)
+    r, g, b = eff.get("rgb", [0.92, 0.74, 0.30])   # 금색
+    gain = float(eff.get("intensity", 1.0))
+    band = (f"exp(-pow((X+{k}*Y-(-350+((T-{ts})/({te}-{ts}))*(W+{k}*H+700)))/{width},2))")
+    gate = f"between(T,{ts},{te})"
+    geq = ":".join(f"{c}='255*{v*gain:.3f}*{band}*{gate}'"
+                   for c, v in (("r", r), ("g", g), ("b", b)))
+    return (f"color=c=black:s={max(160, w//4)}x{max(284, h//4)}:r={fps}:d={eff['_dur']:.2f},"
+            f"format=gbrp,geq={geq},scale={w}:{h}")
+
+
+def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None, effects=None):
     """세로 규격 통일 + 구간 자르기 + 자막 굽기 + 오디오 정규화 + 메타데이터 제거."""
     w, h = cfg["size"]
     chain = [f"scale={w}:{h}:force_original_aspect_ratio=increase",
@@ -173,13 +194,31 @@ def normalize_clip(src, dst, cfg, font, captions, tmpdir, idx, trim=None):
         if end <= start:
             raise BuildError(f"trim 구간이 잘못되었습니다: {trim}")
         seek = ["-ss", f"{start}", "-t", f"{end - start}"]
+    aud = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+    common = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(cfg["fps"]),
+              "-c:a", "aac", "-b:a", "192k", "-ac", "2",
+              "-map_metadata", "-1"]     # GPS·기기 정보 제거
+
+    if not effects:
+        run(["ffmpeg", "-v", "error", "-y", *seek, "-i", str(src),
+             "-vf", ",".join(chain), "-af", aud, *common, str(dst)])
+        return
+
+    w, h = cfg["size"]
+    dur = (float(trim[1]) - float(trim[0])) if trim else duration_of(src)
+    # 합성은 반드시 RGB 에서 한다. YUV 상태로 screen 블렌드를 하면
+    # 색차 성분까지 섞여 화면 전체 색이 틀어진다.
+    fc = ["[0:v]" + ",".join(chain) + ",format=gbrp[b0]"]
+    for j, eff in enumerate(effects):
+        if eff.get("type", "shine") != "shine":
+            raise BuildError(f"알 수 없는 효과: {eff.get('type')}")
+        eff = {**eff, "_dur": dur + 0.2}
+        fc.append(f"{shine_filter(eff, w, h, cfg['fps'])}[s{j}]")
+        fc.append(f"[b{j}][s{j}]blend=all_mode=screen:shortest=1[b{j+1}]")
+    fc[-1] = fc[-1].replace(f"[b{len(effects)}]", ",format=yuv420p[v]")
     run(["ffmpeg", "-v", "error", "-y", *seek, "-i", str(src),
-         "-vf", ",".join(chain),
-         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000",
-         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", str(cfg["fps"]),
-         "-c:a", "aac", "-b:a", "192k", "-ac", "2",
-         "-map_metadata", "-1",          # GPS·기기 정보 제거
-         str(dst)])
+         "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "0:a",
+         "-af", aud, *common, str(dst)])
 
 
 HARD_CUT = 0.06     # 이보다 짧은 전환은 겹치지 않고 그냥 이어붙인다
@@ -322,15 +361,23 @@ def build(cfg_path, outdir):
     name = cfg["output"]
 
     with tempfile.TemporaryDirectory() as tmp:
-        parts = []
+        parts, cache = [], {}
         for i, clip in enumerate(cfg["clips"]):
             src = (cfg["base"] / clip["file"]).expanduser()
             if not src.exists():
                 raise BuildError(f"영상 파일을 찾을 수 없습니다: {src}")
+            # 내용이 같은 조각은 한 번만 만들어 재사용한다.
+            # 같은 장면을 여러 번 반복하는 연출에서 인코딩 횟수가 크게 준다.
+            key = json.dumps([clip["file"], clip.get("trim"), clip.get("captions"),
+                              clip.get("effects")], ensure_ascii=False, sort_keys=True)
+            if key in cache:
+                parts.append(cache[key])
+                continue
             dst = Path(tmp) / f"part{i}.mp4"
             print(f"  [{i+1}/{len(cfg['clips'])}] {src.name} 처리 중...")
             normalize_clip(src, dst, cfg, font, clip.get("captions") or [], tmp, i,
-                           clip.get("trim"))
+                           clip.get("trim"), clip.get("effects"))
+            cache[key] = dst
             parts.append(dst)
 
         print("  클립 연결 중...")
